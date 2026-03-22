@@ -80,8 +80,8 @@ const CONFIG = {
     RUN_WOBBLE_SPEED: 12,
     RUN_WOBBLE_AMPLITUDE: 12,
     SMOOTH_FACTOR: 0.08,
-    APPLE_SCALE: 0.45,
-    CAMERA_Z: 3,
+    APPLE_SCALE: 0.75,
+    CAMERA_Z: 2.5,
 };
 
 // ============================================================
@@ -431,8 +431,8 @@ function animateTongue(elapsed) {
     if (appleState === 'licking') {
         // Licking animation: extend tongue forward (Z) and waggle (X)
         const lickPhase = Math.sin(elapsed * CONFIG.LICK_SPEED);
-        const extend = Math.max(0, lickPhase) * 0.06 * scaleFactor; // forward extension
-        const waggle = Math.sin(elapsed * CONFIG.LICK_SPEED * 1.7) * 0.02 * scaleFactor; // left-right waggle
+        const extend = Math.max(0, lickPhase) * 0.18 * scaleFactor; // forward extension
+        const waggle = Math.sin(elapsed * CONFIG.LICK_SPEED * 1.7) * 0.06 * scaleFactor; // left-right waggle
         
         for (let i = 0; i < tongueVertexIndices.length; i++) {
             const vi = tongueVertexIndices[i];
