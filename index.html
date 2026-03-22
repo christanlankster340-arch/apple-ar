@@ -309,42 +309,25 @@ function onResize() {
 // ============================================================
 function loadAppleModel() {
     return new Promise((resolve, reject) => {
-        // Load texture
+        // Load only diffuse texture (optimized JPEG)
         const textureLoader = new THREE.TextureLoader();
-        const diffuseMap = textureLoader.load('model/texture_diffuse.png', () => {
-            updateLoadProgress(40);
-        });
-        diffuseMap.colorSpace = THREE.SRGBColorSpace;
-        
-        const normalMap = textureLoader.load('model/texture_normal.png', () => {
+        const diffuseMap = textureLoader.load('model/texture_diffuse.jpg', () => {
             updateLoadProgress(50);
         });
+        diffuseMap.colorSpace = THREE.SRGBColorSpace;
 
-        const roughnessMap = textureLoader.load('model/texture_roughness.png', () => {
-            updateLoadProgress(55);
-        });
-
-        const metallicMap = textureLoader.load('model/texture_metallic.png', () => {
-            updateLoadProgress(60);
-        });
-
-        // Load OBJ
+        // Load optimized OBJ (decimated mesh)
         const objLoader = new THREE.OBJLoader();
         objLoader.load(
-            'model/apple.obj',
+            'model/apple_opt.obj',
             (obj) => {
                 appleGroup = new THREE.Group();
                 
-                // Apply material to all meshes
+                // Use lighter material for mobile performance
                 obj.traverse((child) => {
                     if (child.isMesh) {
-                        child.material = new THREE.MeshStandardMaterial({
+                        child.material = new THREE.MeshLambertMaterial({
                             map: diffuseMap,
-                            normalMap: normalMap,
-                            roughnessMap: roughnessMap,
-                            metalnessMap: metallicMap,
-                            roughness: 0.7,
-                            metalness: 0.1,
                         });
                     }
                 });
@@ -381,13 +364,12 @@ function loadAppleModel() {
             },
             (xhr) => {
                 if (xhr.total > 0) {
-                    const pct = 60 + (xhr.loaded / xhr.total) * 20;
+                    const pct = 50 + (xhr.loaded / xhr.total) * 30;
                     updateLoadProgress(pct);
                 }
             },
             (err) => {
                 console.error('Failed to load apple model:', err);
-                // Fallback: create a red sphere
                 createFallbackApple();
                 resolve();
             }
@@ -475,7 +457,7 @@ async function initMediaPipe() {
 
     hands.setOptions({
         maxNumHands: CONFIG.MAX_HANDS,
-        modelComplexity: 1,
+        modelComplexity: 0,  // Lite model for faster loading
         minDetectionConfidence: CONFIG.MIN_DETECTION_CONFIDENCE,
         minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
     });
