@@ -88,13 +88,17 @@ const CONFIG = {
 // GLOBALS
 // ============================================================
 let THREE, scene, camera, renderer, clock;
-let appleGroup, tongueObj;
+let appleGroup, appleMesh;
+let tongueVertexIndices = [];   // buffer indices of tongue vertices
+let tongueOrigPositions = [];   // original Float32 positions to restore
+let tongueBaseZ = 0;            // average Z of tongue for animation reference
 let handDetected = false;
 let handPosition = { x: 0, y: 0 };
 let smoothedHandPosition = { x: 0, y: 0 };
 let appleState = 'idle';
 let appleWorldPos = { x: 0, y: 0 };
 let debugCtx;
+let scaleFactor = 1;
 
 function updateLoadProgress(pct, detail) {
     document.getElementById('loading-bar-fill').style.width = Math.min(pct, 100) + '%';
@@ -164,12 +168,11 @@ function initThree() {
 }
 
 // ============================================================
-// LOAD APPLE FROM BINARY (instant parsing)
+// LOAD APPLE FROM BINARY (with tongue vertex data)
 // ============================================================
 async function loadAppleBinary() {
     updateLoadProgress(30, '加载苹果模型...');
     
-    // Load binary buffer and texture in parallel
     const [buffer, texture] = await Promise.all([
         fetch('model/apple.bin').then(r => r.arrayBuffer()),
         new Promise((resolve) => {
@@ -183,12 +186,14 @@ async function loadAppleBinary() {
     const view = new DataView(buffer);
     let offset = 0;
     
-    // Read header
+    // Read header: vertCount, idxCount, tongueVertCount
     const vertCount = view.getUint32(offset, true); offset += 4;
     const idxCount = view.getUint32(offset, true); offset += 4;
+    const tongueVertCount = view.getUint32(offset, true); offset += 4;
     
-    // Read positions
-    const positions = new Float32Array(buffer, offset, vertCount * 3);
+    // Read positions (make a copy so we can modify for animation)
+    const positionsSrc = new Float32Array(buffer, offset, vertCount * 3);
+    const positions = new Float32Array(positionsSrc); // writable copy
     offset += vertCount * 3 * 4;
     
     // Read UVs
@@ -199,8 +204,13 @@ async function loadAppleBinary() {
     const normals = new Float32Array(buffer, offset, vertCount * 3);
     offset += vertCount * 3 * 4;
     
-    // Read indices
+    // Read mesh indices
     const indices = new Uint16Array(buffer, offset, idxCount);
+    offset += idxCount * 2;
+    
+    // Read tongue vertex indices
+    const tongueIndicesRaw = new Uint16Array(buffer, offset, tongueVertCount);
+    tongueVertexIndices = Array.from(tongueIndicesRaw);
     
     // Build geometry
     const geometry = new THREE.BufferGeometry();
@@ -219,27 +229,28 @@ async function loadAppleBinary() {
     const size = new THREE.Vector3();
     box.getSize(size);
     const maxDim = Math.max(size.x, size.y, size.z);
-    const scaleFactor = CONFIG.APPLE_SCALE / maxDim;
+    scaleFactor = CONFIG.APPLE_SCALE / maxDim;
     geometry.scale(scaleFactor, scaleFactor, scaleFactor);
+    
+    // Store original tongue vertex positions (after centering + scaling)
+    const posAttr = geometry.attributes.position;
+    tongueOrigPositions = [];
+    let sumZ = 0;
+    for (const vi of tongueVertexIndices) {
+        const x = posAttr.getX(vi);
+        const y = posAttr.getY(vi);
+        const z = posAttr.getZ(vi);
+        tongueOrigPositions.push({ x, y, z });
+        sumZ += z;
+    }
+    tongueBaseZ = sumZ / tongueVertexIndices.length;
     
     // Create mesh
     const material = new THREE.MeshLambertMaterial({ map: texture });
-    const mesh = new THREE.Mesh(geometry, material);
+    appleMesh = new THREE.Mesh(geometry, material);
     
     appleGroup = new THREE.Group();
-    appleGroup.add(mesh);
-    
-    // Add tongue
-    const tongueGeo = new THREE.BoxGeometry(0.04, 0.015, 0.12);
-    const tongueMat = new THREE.MeshLambertMaterial({ color: 0xff3366 });
-    tongueObj = new THREE.Mesh(tongueGeo, tongueMat);
-    const tipGeo = new THREE.SphereGeometry(0.022, 8, 8);
-    const tipMesh = new THREE.Mesh(tipGeo, tongueMat);
-    tipMesh.position.z = 0.06;
-    tongueObj.add(tipMesh);
-    tongueObj.position.set(0, -0.06, 0.18);
-    tongueObj.visible = false;
-    appleGroup.add(tongueObj);
+    appleGroup.add(appleMesh);
     
     appleGroup.position.set(0, 0, 0);
     scene.add(appleGroup);
@@ -400,20 +411,51 @@ function animate() {
             const floatY = Math.sin(elapsed * CONFIG.FLOAT_SPEED * 0.8) * CONFIG.FLOAT_AMPLITUDE * 0.3;
             appleGroup.position.set(appleWorldPos.x, appleWorldPos.y + floatY, 0);
             appleGroup.rotation.set(0, 0, Math.sin(elapsed * 6) * 8 * deg);
-            if (tongueObj) {
-                const lickPhase = Math.sin(elapsed * CONFIG.LICK_SPEED);
-                tongueObj.position.z = 0.18 + 0.04 + Math.max(0, lickPhase) * 0.08;
-                tongueObj.position.x = Math.sin(elapsed * CONFIG.LICK_SPEED * 1.7) * 0.03;
-                tongueObj.rotation.x = lickPhase * 0.2;
-            }
             break;
         }
     }
 
-    if (tongueObj) tongueObj.visible = (appleState === 'licking');
+    // Animate model's own tongue vertices
+    animateTongue(elapsed);
+
     if (handDetected) document.getElementById('instruction').classList.add('hidden');
 
     renderer.render(scene, camera);
+}
+
+function animateTongue(elapsed) {
+    if (!appleMesh || tongueVertexIndices.length === 0) return;
+    
+    const posAttr = appleMesh.geometry.attributes.position;
+    
+    if (appleState === 'licking') {
+        // Licking animation: extend tongue forward (Z) and waggle (X)
+        const lickPhase = Math.sin(elapsed * CONFIG.LICK_SPEED);
+        const extend = Math.max(0, lickPhase) * 0.06 * scaleFactor; // forward extension
+        const waggle = Math.sin(elapsed * CONFIG.LICK_SPEED * 1.7) * 0.02 * scaleFactor; // left-right waggle
+        
+        for (let i = 0; i < tongueVertexIndices.length; i++) {
+            const vi = tongueVertexIndices[i];
+            const orig = tongueOrigPositions[i];
+            // How far this vertex is from tongue base (tip moves more)
+            const distFromBase = (orig.z - tongueBaseZ) / (0.2 * scaleFactor);
+            const weight = Math.max(0, Math.min(1, distFromBase * 1.5 + 0.3));
+            
+            posAttr.setX(vi, orig.x + waggle * weight);
+            posAttr.setZ(vi, orig.z + extend * weight);
+        }
+    } else {
+        // Restore original positions
+        for (let i = 0; i < tongueVertexIndices.length; i++) {
+            const vi = tongueVertexIndices[i];
+            const orig = tongueOrigPositions[i];
+            posAttr.setX(vi, orig.x);
+            posAttr.setY(vi, orig.y);
+            posAttr.setZ(vi, orig.z);
+        }
+    }
+    
+    posAttr.needsUpdate = true;
 }
 
 // ============================================================
