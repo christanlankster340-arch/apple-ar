@@ -174,9 +174,9 @@ async function loadAppleBinary() {
     updateLoadProgress(30, '加载苹果模型...');
     
     const [buffer, texture] = await Promise.all([
-        fetch('model/apple.bin').then(r => r.arrayBuffer()),
+        fetch('model/apple.bin?v=2').then(r => r.arrayBuffer()),
         new Promise((resolve) => {
-            const tex = new THREE.TextureLoader().load('model/texture_diffuse.jpg', () => resolve(tex));
+            const tex = new THREE.TextureLoader().load('model/texture_diffuse.jpg?v=2', () => resolve(tex));
             tex.colorSpace = THREE.SRGBColorSpace;
         })
     ]);
