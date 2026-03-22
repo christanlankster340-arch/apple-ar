@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR 苹果互动 - 手部追踪</title>
+    <meta name="description" content="用手机摄像头检测手部，苹果会飞过来舔你的手！">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            overflow: hidden;
+            background: #000;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            touch-action: none;
+        }
+        #video-container {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 0;
+        }
+        #input-video {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        #canvas3d {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 1;
+            pointer-events: none;
+        }
+        #debug-canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 2;
+            pointer-events: none;
+        }
+        /* Loading overlay */
+        #loading-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 100;
+            background: linear-gradient(135deg, #1a0a0a 0%, #2d0f0f 50%, #1a0505 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.8s ease;
+        }
+        #loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .loading-apple {
+            font-size: 80px;
+            animation: bounce 1.5s ease-in-out infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0) rotate(0deg); }
+            25% { transform: translateY(-20px) rotate(-5deg); }
+            75% { transform: translateY(-10px) rotate(5deg); }
+        }
+        .loading-text {
+            color: #ff6b6b;
+            font-size: 18px;
+            margin-top: 24px;
+            letter-spacing: 2px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
+        .loading-bar {
+            width: 200px;
+            height: 4px;
+            background: rgba(255,107,107,0.2);
+            border-radius: 2px;
+            margin-top: 16px;
+            overflow: hidden;
+        }
+        .loading-bar-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #ff6b6b, #ff8e8e);
+            border-radius: 2px;
+            transition: width 0.5s ease;
+        }
+
+        /* Status HUD */
+        #status-hud {
+            position: fixed;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            padding: 8px 20px;
+            border-radius: 24px;
+            font-size: 14px;
+            color: #fff;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+            white-space: nowrap;
+        }
+        #status-hud.detecting {
+            background: rgba(76, 175, 80, 0.6);
+            border-color: rgba(76, 175, 80, 0.3);
+        }
+        #status-hud .dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+            vertical-align: middle;
+            background: #aaa;
+            animation: blink 1.5s ease-in-out infinite;
+        }
+        #status-hud.detecting .dot {
+            background: #4caf50;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* Instruction toast */
+        #instruction {
+            position: fixed;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            padding: 12px 24px;
+            border-radius: 16px;
+            font-size: 15px;
+            color: rgba(255,255,255,0.9);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            background: rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,255,255,0.08);
+            text-align: center;
+            transition: opacity 1s ease;
+            max-width: 90vw;
+        }
+        #instruction.hidden { opacity: 0; pointer-events: none; }
+    </style>
+</head>
+<body>
+
+<!-- Loading Screen -->
+<div id="loading-overlay">
+    <div class="loading-apple">🍎</div>
+    <div class="loading-text">正在加载 AR 体验...</div>
+    <div class="loading-bar"><div class="loading-bar-fill" id="loading-bar-fill"></div></div>
+</div>
+
+<!-- Status HUD -->
+<div id="status-hud">
+    <span class="dot"></span>
+    <span id="status-text">初始化中...</span>
+</div>
+
+<!-- Instruction -->
+<div id="instruction">伸出你的手 🖐️ 苹果会飞过来舔你！</div>
+
+<!-- Camera Video -->
+<div id="video-container">
+    <video id="input-video" autoplay playsinline muted></video>
+</div>
+
+<!-- 3D Canvas (Three.js) -->
+<canvas id="canvas3d"></canvas>
+
+<!-- Debug Canvas (hand landmarks visualization) -->
+<canvas id="debug-canvas"></canvas>
+
+<!-- Dependencies -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/OBJLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+
+<script>
+// ============================================================
+// CONFIG
+// ============================================================
+const CONFIG = {
+    // Apple behavior
+    CHASE_SPEED: 2.5,          // units per second
+    LICK_DISTANCE: 0.35,       // distance threshold to start licking
+    FLOAT_AMPLITUDE: 0.08,     // idle vertical bob amplitude
+    FLOAT_SPEED: 2.0,          // idle bob speed
+    WOBBLE_AMPLITUDE: 5,       // degrees of idle tilt wobble
+    WOBBLE_SPEED: 1.5,
+    LICK_SPEED: 8.0,           // tongue oscillation speed
+    RUN_WOBBLE_SPEED: 12,      // wobble speed while chasing
+    RUN_WOBBLE_AMPLITUDE: 12,  // degrees while chasing
+    SMOOTH_FACTOR: 0.08,       // hand position smoothing
+
+    // 3D scene
+    APPLE_SCALE: 0.45,
+    CAMERA_Z: 3,
+    INITIAL_APPLE_POS: { x: 0, y: 0, z: 0 },
+
+    // MediaPipe
+    MAX_HANDS: 1,
+    MIN_DETECTION_CONFIDENCE: 0.6,
+    MIN_TRACKING_CONFIDENCE: 0.5,
+};
+
+// ============================================================
+// GLOBALS
+// ============================================================
+let scene, camera, renderer;
+let appleGroup, appleModel;
+let tongueObj;
+let clock;
+let handDetected = false;
+let handPosition = { x: 0, y: 0 };
+let smoothedHandPosition = { x: 0, y: 0 };
+let lastHandPosition = { x: 0, y: 0 };
+let appleState = 'idle'; // 'idle', 'chasing', 'licking'
+let appleWorldPos = { x: 0, y: 0 };
+let debugCtx;
+let loadProgress = 0;
+
+// ============================================================
+// LOADING
+// ============================================================
+function updateLoadProgress(pct) {
+    loadProgress = Math.max(loadProgress, pct);
+    document.getElementById('loading-bar-fill').style.width = loadProgress + '%';
+}
+
+function hideLoading() {
+    document.getElementById('loading-overlay').classList.add('hidden');
+}
+
+function setStatus(text, detecting = false) {
+    const hud = document.getElementById('status-hud');
+    document.getElementById('status-text').textContent = text;
+    if (detecting) hud.classList.add('detecting');
+    else hud.classList.remove('detecting');
+}
+
+// ============================================================
+// THREE.JS SETUP
+// ============================================================
+function initThree() {
+    const canvas = document.getElementById('canvas3d');
+    
+    scene = new THREE.Scene();
+    
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, CONFIG.CAMERA_Z);
+    camera.lookAt(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x000000, 0);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight.position.set(2, 3, 4);
+    scene.add(dirLight);
+
+    const fillLight = new THREE.DirectionalLight(0xffd4d4, 0.4);
+    fillLight.position.set(-2, -1, 2);
+    scene.add(fillLight);
+
+    clock = new THREE.Clock();
+
+    // Debug canvas
+    const debugCanvas = document.getElementById('debug-canvas');
+    debugCanvas.width = window.innerWidth;
+    debugCanvas.height = window.innerHeight;
+    debugCtx = debugCanvas.getContext('2d');
+
+    window.addEventListener('resize', onResize);
+    updateLoadProgress(20);
+}
+
+function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    
+    const debugCanvas = document.getElementById('debug-canvas');
+    debugCanvas.width = window.innerWidth;
+    debugCanvas.height = window.innerHeight;
+}
+
+// ============================================================
+// LOAD APPLE MODEL
+// ============================================================
+function loadAppleModel() {
+    return new Promise((resolve, reject) => {
+        // Load texture
+        const textureLoader = new THREE.TextureLoader();
+        const diffuseMap = textureLoader.load('model/texture_diffuse.png', () => {
+            updateLoadProgress(40);
+        });
+        diffuseMap.colorSpace = THREE.SRGBColorSpace;
+        
+        const normalMap = textureLoader.load('model/texture_normal.png', () => {
+            updateLoadProgress(50);
+        });
+
+        const roughnessMap = textureLoader.load('model/texture_roughness.png', () => {
+            updateLoadProgress(55);
+        });
+
+        const metallicMap = textureLoader.load('model/texture_metallic.png', () => {
+            updateLoadProgress(60);
+        });
+
+        // Load OBJ
+        const objLoader = new THREE.OBJLoader();
+        objLoader.load(
+            'model/apple.obj',
+            (obj) => {
+                appleGroup = new THREE.Group();
+                
+                // Apply material to all meshes
+                obj.traverse((child) => {
+                    if (child.isMesh) {
+                        child.material = new THREE.MeshStandardMaterial({
+                            map: diffuseMap,
+                            normalMap: normalMap,
+                            roughnessMap: roughnessMap,
+                            metalnessMap: metallicMap,
+                            roughness: 0.7,
+                            metalness: 0.1,
+                        });
+                    }
+                });
+
+                // Center the model
+                const box = new THREE.Box3().setFromObject(obj);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                obj.position.sub(center);
+
+                // Scale to uniform size
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scaleFactor = CONFIG.APPLE_SCALE / maxDim;
+                obj.scale.setScalar(scaleFactor);
+
+                appleModel = obj;
+                appleGroup.add(obj);
+
+                // Create tongue (hidden initially)
+                createTongue();
+
+                appleGroup.position.set(
+                    CONFIG.INITIAL_APPLE_POS.x,
+                    CONFIG.INITIAL_APPLE_POS.y,
+                    CONFIG.INITIAL_APPLE_POS.z
+                );
+
+                scene.add(appleGroup);
+                appleWorldPos.x = CONFIG.INITIAL_APPLE_POS.x;
+                appleWorldPos.y = CONFIG.INITIAL_APPLE_POS.y;
+
+                updateLoadProgress(80);
+                resolve();
+            },
+            (xhr) => {
+                if (xhr.total > 0) {
+                    const pct = 60 + (xhr.loaded / xhr.total) * 20;
+                    updateLoadProgress(pct);
+                }
+            },
+            (err) => {
+                console.error('Failed to load apple model:', err);
+                // Fallback: create a red sphere
+                createFallbackApple();
+                resolve();
+            }
+        );
+    });
+}
+
+function createFallbackApple() {
+    appleGroup = new THREE.Group();
+    
+    const geometry = new THREE.SphereGeometry(0.2, 32, 32);
+    const material = new THREE.MeshStandardMaterial({
+        color: 0xcc2233,
+        roughness: 0.4,
+        metalness: 0.1,
+    });
+    const sphere = new THREE.Mesh(geometry, material);
+    appleGroup.add(sphere);
+
+    // Stem
+    const stemGeo = new THREE.CylinderGeometry(0.015, 0.02, 0.08, 8);
+    const stemMat = new THREE.MeshStandardMaterial({ color: 0x5c3a1e });
+    const stem = new THREE.Mesh(stemGeo, stemMat);
+    stem.position.y = 0.22;
+    appleGroup.add(stem);
+
+    // Eyes
+    const eyeGeo = new THREE.SphereGeometry(0.035, 16, 16);
+    const eyeWhite = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const pupilGeo = new THREE.SphereGeometry(0.018, 16, 16);
+    const pupilMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+
+    [-1, 1].forEach((side) => {
+        const eye = new THREE.Mesh(eyeGeo, eyeWhite);
+        eye.position.set(side * 0.07, 0.06, 0.18);
+        appleGroup.add(eye);
+        const pupil = new THREE.Mesh(pupilGeo, pupilMat);
+        pupil.position.set(side * 0.07, 0.06, 0.21);
+        appleGroup.add(pupil);
+    });
+
+    createTongue();
+
+    appleGroup.position.set(0, 0, 0);
+    scene.add(appleGroup);
+    appleWorldPos = { x: 0, y: 0 };
+}
+
+function createTongue() {
+    // Tongue - a flat red shape
+    const tongueGeo = new THREE.BoxGeometry(0.04, 0.015, 0.12);
+    // Round the edges by using a capsule-like shape
+    const tongueMat = new THREE.MeshStandardMaterial({
+        color: 0xff3366,
+        roughness: 0.6,
+        metalness: 0.0,
+    });
+    tongueObj = new THREE.Mesh(tongueGeo, tongueMat);
+    
+    // Tongue tip (sphere at the end)
+    const tipGeo = new THREE.SphereGeometry(0.022, 12, 12);
+    const tipMesh = new THREE.Mesh(tipGeo, tongueMat);
+    tipMesh.position.z = 0.06;
+    tongueObj.add(tipMesh);
+
+    tongueObj.position.set(0, -0.06, 0.18);
+    tongueObj.visible = false;
+    appleGroup.add(tongueObj);
+}
+
+// ============================================================
+// MEDIAPIPE HANDS
+// ============================================================
+async function initMediaPipe() {
+    setStatus('正在加载手部追踪模型...');
+    updateLoadProgress(85);
+
+    const videoEl = document.getElementById('input-video');
+
+    const hands = new Hands({
+        locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`;
+        }
+    });
+
+    hands.setOptions({
+        maxNumHands: CONFIG.MAX_HANDS,
+        modelComplexity: 1,
+        minDetectionConfidence: CONFIG.MIN_DETECTION_CONFIDENCE,
+        minTrackingConfidence: CONFIG.MIN_TRACKING_CONFIDENCE,
+    });
+
+    hands.onResults(onHandResults);
+
+    const cam = new Camera(videoEl, {
+        onFrame: async () => {
+            await hands.send({ image: videoEl });
+        },
+        width: 640,
+        height: 480,
+        facingMode: 'environment', // Use rear camera
+    });
+
+    await cam.start();
+    updateLoadProgress(100);
+    
+    setTimeout(() => {
+        hideLoading();
+        setStatus('请伸出你的手 🖐️');
+    }, 500);
+}
+
+function onHandResults(results) {
+    // Clear debug canvas
+    debugCtx.clearRect(0, 0, debugCtx.canvas.width, debugCtx.canvas.height);
+
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        handDetected = true;
+
+        // Draw hand landmarks
+        drawHandLandmarks(landmarks);
+
+        // Get palm center (average of wrist, index MCP, middle MCP, ring MCP, pinky MCP)
+        const palmIndices = [0, 5, 9, 13, 17];
+        let palmX = 0, palmY = 0;
+        palmIndices.forEach(i => {
+            palmX += landmarks[i].x;
+            palmY += landmarks[i].y;
+        });
+        palmX /= palmIndices.length;
+        palmY /= palmIndices.length;
+
+        // MediaPipe coords are 0-1, mirrored. Convert to Three.js screen coords.
+        // Video is mirrored with scaleX(-1), so we need to mirror x
+        const screenX = palmX; // Already in 0-1, mirrored matches
+        const screenY = palmY;
+
+        // Convert to Three.js world coordinates
+        // Map from [0,1] to [-aspect, aspect] for x, and [1, -1] for y
+        const aspect = window.innerWidth / window.innerHeight;
+        const vFov = (camera.fov * Math.PI) / 180;
+        const planeHeight = 2 * Math.tan(vFov / 2) * CONFIG.CAMERA_Z;
+        const planeWidth = planeHeight * aspect;
+
+        handPosition.x = (screenX - 0.5) * planeWidth;
+        handPosition.y = -(screenY - 0.5) * planeHeight;
+
+        setStatus('检测到手！🖐️', true);
+    } else {
+        handDetected = false;
+        setStatus('请伸出你的手 🖐️');
+    }
+}
+
+function drawHandLandmarks(landmarks) {
+    const w = debugCtx.canvas.width;
+    const h = debugCtx.canvas.height;
+
+    // Connections
+    const connections = [
+        [0,1],[1,2],[2,3],[3,4],       // Thumb
+        [0,5],[5,6],[6,7],[7,8],       // Index
+        [0,9],[9,10],[10,11],[11,12],  // Middle
+        [0,13],[13,14],[14,15],[15,16],// Ring
+        [0,17],[17,18],[18,19],[19,20],// Pinky
+        [5,9],[9,13],[13,17],          // Palm
+    ];
+
+    debugCtx.strokeStyle = 'rgba(76, 175, 80, 0.6)';
+    debugCtx.lineWidth = 2;
+
+    connections.forEach(([a, b]) => {
+        const ax = landmarks[a].x * w;
+        const ay = landmarks[a].y * h;
+        const bx = landmarks[b].x * w;
+        const by = landmarks[b].y * h;
+
+        debugCtx.beginPath();
+        debugCtx.moveTo(ax, ay);
+        debugCtx.lineTo(bx, by);
+        debugCtx.stroke();
+    });
+
+    // Points
+    landmarks.forEach((lm, i) => {
+        const x = lm.x * w;
+        const y = lm.y * h;
+        
+        debugCtx.beginPath();
+        debugCtx.arc(x, y, i === 0 ? 5 : 3, 0, Math.PI * 2);
+        debugCtx.fillStyle = i < 5 ? 'rgba(255, 107, 107, 0.8)' : 'rgba(76, 175, 80, 0.8)';
+        debugCtx.fill();
+    });
+}
+
+// ============================================================
+// ANIMATION LOOP
+// ============================================================
+function animate() {
+    requestAnimationFrame(animate);
+
+    const dt = clock.getDelta();
+    const elapsed = clock.getElapsedTime();
+
+    if (!appleGroup) {
+        renderer.render(scene, camera);
+        return;
+    }
+
+    // Smooth hand position
+    if (handDetected) {
+        smoothedHandPosition.x += (handPosition.x - smoothedHandPosition.x) * CONFIG.SMOOTH_FACTOR;
+        smoothedHandPosition.y += (handPosition.y - smoothedHandPosition.y) * CONFIG.SMOOTH_FACTOR;
+    }
+
+    // State machine
+    if (handDetected) {
+        const dx = smoothedHandPosition.x - appleWorldPos.x;
+        const dy = smoothedHandPosition.y - appleWorldPos.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist < CONFIG.LICK_DISTANCE) {
+            appleState = 'licking';
+        } else {
+            appleState = 'chasing';
+        }
+    } else {
+        appleState = 'idle';
+    }
+
+    // Update apple based on state
+    switch (appleState) {
+        case 'idle':
+            updateIdle(elapsed, dt);
+            break;
+        case 'chasing':
+            updateChasing(elapsed, dt);
+            break;
+        case 'licking':
+            updateLicking(elapsed, dt);
+            break;
+    }
+
+    // Hide tongue when not licking
+    if (tongueObj) {
+        tongueObj.visible = (appleState === 'licking');
+    }
+
+    // Hide instruction after first hand detection
+    if (handDetected) {
+        document.getElementById('instruction').classList.add('hidden');
+    }
+
+    renderer.render(scene, camera);
+}
+
+function updateIdle(elapsed, dt) {
+    // Gentle floating
+    const floatY = Math.sin(elapsed * CONFIG.FLOAT_SPEED) * CONFIG.FLOAT_AMPLITUDE;
+    appleGroup.position.y = appleWorldPos.y + floatY;
+    appleGroup.position.x = appleWorldPos.x;
+
+    // Gentle wobble
+    const wobbleZ = Math.sin(elapsed * CONFIG.WOBBLE_SPEED) * CONFIG.WOBBLE_AMPLITUDE * (Math.PI / 180);
+    const wobbleX = Math.cos(elapsed * CONFIG.WOBBLE_SPEED * 0.7) * CONFIG.WOBBLE_AMPLITUDE * 0.5 * (Math.PI / 180);
+    appleGroup.rotation.set(wobbleX, 0, wobbleZ);
+}
+
+function updateChasing(elapsed, dt) {
+    const dx = smoothedHandPosition.x - appleWorldPos.x;
+    const dy = smoothedHandPosition.y - appleWorldPos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist > 0.01) {
+        const speed = CONFIG.CHASE_SPEED * dt;
+        const moveX = (dx / dist) * Math.min(speed, dist);
+        const moveY = (dy / dist) * Math.min(speed, dist);
+        appleWorldPos.x += moveX;
+        appleWorldPos.y += moveY;
+    }
+
+    // Float while moving
+    const floatY = Math.sin(elapsed * CONFIG.FLOAT_SPEED * 1.5) * CONFIG.FLOAT_AMPLITUDE * 0.5;
+    appleGroup.position.x = appleWorldPos.x;
+    appleGroup.position.y = appleWorldPos.y + floatY;
+
+    // Excited wobble while chasing
+    const wobbleZ = Math.sin(elapsed * CONFIG.RUN_WOBBLE_SPEED) * CONFIG.RUN_WOBBLE_AMPLITUDE * (Math.PI / 180);
+    const wobbleX = Math.cos(elapsed * CONFIG.RUN_WOBBLE_SPEED * 0.8) * CONFIG.RUN_WOBBLE_AMPLITUDE * 0.5 * (Math.PI / 180);
+    
+    // Lean toward movement direction
+    const leanAngle = Math.atan2(dy, dx) * 0.3;
+    appleGroup.rotation.set(wobbleX, 0, wobbleZ + leanAngle);
+}
+
+function updateLicking(elapsed, dt) {
+    // Stay near hand
+    const dx = smoothedHandPosition.x - appleWorldPos.x;
+    const dy = smoothedHandPosition.y - appleWorldPos.y;
+    appleWorldPos.x += dx * 0.05;
+    appleWorldPos.y += dy * 0.05;
+
+    // Gentle bob
+    const floatY = Math.sin(elapsed * CONFIG.FLOAT_SPEED * 0.8) * CONFIG.FLOAT_AMPLITUDE * 0.3;
+    appleGroup.position.x = appleWorldPos.x;
+    appleGroup.position.y = appleWorldPos.y + floatY;
+
+    // Happy wiggle
+    const wiggle = Math.sin(elapsed * 6) * 8 * (Math.PI / 180);
+    appleGroup.rotation.set(0, 0, wiggle);
+
+    // Animate tongue
+    if (tongueObj) {
+        // Tongue extends and retracts
+        const lickPhase = Math.sin(elapsed * CONFIG.LICK_SPEED);
+        const tongueExtend = 0.04 + Math.max(0, lickPhase) * 0.08;
+        tongueObj.position.z = 0.18 + tongueExtend;
+        
+        // Tongue waggles left/right
+        const waggle = Math.sin(elapsed * CONFIG.LICK_SPEED * 1.7) * 0.03;
+        tongueObj.position.x = waggle;
+        
+        // Slight tongue rotation
+        tongueObj.rotation.x = lickPhase * 0.2;
+    }
+}
+
+// ============================================================
+// INIT
+// ============================================================
+async function main() {
+    try {
+        initThree();
+        await loadAppleModel();
+        await initMediaPipe();
+        animate();
+    } catch (err) {
+        console.error('Initialization error:', err);
+        setStatus('初始化失败: ' + err.message);
+    }
+}
+
+main();
+</script>
+</body>
+</html>
