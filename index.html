@@ -397,10 +397,12 @@ function animate() {
             }
             const floatY = Math.sin(elapsed * CONFIG.FLOAT_SPEED * 1.5) * CONFIG.FLOAT_AMPLITUDE * 0.5;
             appleGroup.position.set(appleWorldPos.x, appleWorldPos.y + floatY, 0);
+            
+            // Turn body toward hand while chasing (tongue faces hand direction)
+            const faceY = Math.atan2(dx, 0.8);  // rotate left/right toward hand
+            const faceX = Math.atan2(-dy, 0.8);  // tilt up/down toward hand
             const wz = Math.sin(elapsed * CONFIG.RUN_WOBBLE_SPEED) * CONFIG.RUN_WOBBLE_AMPLITUDE * deg;
-            const wx = Math.cos(elapsed * CONFIG.RUN_WOBBLE_SPEED * 0.8) * CONFIG.RUN_WOBBLE_AMPLITUDE * 0.5 * deg;
-            const lean = Math.atan2(dy, dx) * 0.3;
-            appleGroup.rotation.set(wx, 0, wz + lean);
+            appleGroup.rotation.set(faceX * 0.4, faceY * 0.4, wz);
             break;
         }
         case 'licking': {
@@ -410,7 +412,12 @@ function animate() {
             appleWorldPos.y += dy * 0.05;
             const floatY = Math.sin(elapsed * CONFIG.FLOAT_SPEED * 0.8) * CONFIG.FLOAT_AMPLITUDE * 0.3;
             appleGroup.position.set(appleWorldPos.x, appleWorldPos.y + floatY, 0);
-            appleGroup.rotation.set(0, 0, Math.sin(elapsed * 6) * 8 * deg);
+            
+            // Rotate body to face the hand — tongue points at hand
+            const faceY = Math.atan2(dx, 0.4);  // aggressively turn toward hand
+            const faceX = Math.atan2(-dy, 0.4);  // aggressively tilt toward hand
+            const wiggle = Math.sin(elapsed * 6) * 5 * deg; // happy wiggle
+            appleGroup.rotation.set(faceX, faceY, wiggle);
             break;
         }
     }
